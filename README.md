@@ -21,7 +21,7 @@ while it runs**:
 ## Results
 
 <!-- RESULTS:START -->
-_CI populates this table on every push to `main` (GitHub's Ubuntu runners have BTF + root). See the [Actions tab](https://github.com/aviNaftalis/ebpf-vs-userspace/actions) until the first run lands._
+
 <!-- RESULTS:END -->
 
 **Expected story:** `eBPF ≈ baseline` (it observes for almost free) **≪ `strace`**

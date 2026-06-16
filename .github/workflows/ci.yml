@@ -16,7 +16,14 @@ jobs:
       - name: Install eBPF toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev bpftool strace make
+          sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev \
+                                  linux-tools-common linux-tools-generic strace make
+          # `bpftool` is a virtual package on the runner; use the generic binary
+          # directly (its btf-dump / gen-skeleton work regardless of kernel version).
+          BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1 || true)"
+          [ -z "$BPFTOOL" ] && BPFTOOL="$(command -v bpftool || true)"
+          echo "Using bpftool: ${BPFTOOL:-NONE}"
+          echo "BPFTOOL=$BPFTOOL" >> "$GITHUB_ENV"
 
       - name: Show kernel / BTF
         run: |

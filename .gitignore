@@ -4,4 +4,5 @@ vmlinux.h
 src/*.bpf.o
 src/*.skel.h
 results.md
+results.csv
 *.o

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # so CI can commit the refreshed results table
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev bpftool strace make
+
+      - name: Show kernel / BTF
+        run: |
+          uname -a
+          ls -l /sys/kernel/btf/vmlinux
+
+      - name: Build
+        run: make
+
+      - name: Benchmark (root needed for eBPF + strace)
+        run: |
+          sudo ./scripts/bench.sh | tee results.md
+          { echo '## Benchmark'; cat results.md; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit refreshed results to README
+        if: github.ref == 'refs/heads/main'
+        run: |
+          python3 scripts/update_readme.py results.md
+          if ! git diff --quiet README.md; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "ci: refresh benchmark results [skip ci]"
+            git push
+          fi

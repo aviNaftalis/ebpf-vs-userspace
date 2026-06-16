@@ -10,6 +10,8 @@ START = "<!-- RESULTS:START -->"
 END = "<!-- RESULTS:END -->"
 
 results = pathlib.Path(sys.argv[1]).read_text()
+if not results.strip():
+    sys.exit("results file is empty — refusing to update README")
 readme_path = pathlib.Path("README.md")
 text = readme_path.read_text()
 

@@ -35,7 +35,9 @@ jobs:
 
       - name: Benchmark (root needed for eBPF + strace)
         run: |
-          sudo ./scripts/bench.sh | tee results.md
+          set -o pipefail
+          sudo bash ./scripts/bench.sh | tee results.md
+          test -s results.md   # fail the step if the benchmark produced nothing
           { echo '## Benchmark'; cat results.md; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit refreshed results to README

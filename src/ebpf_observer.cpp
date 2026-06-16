@@ -1,10 +1,10 @@
 // src/ebpf_observer.cpp
 //
-// Userspace loader for the eBPF program. It loads + attaches the tracepoint,
-// then launches the target (`ebpf_observer -- ./logtarget ...`) with its stdout
-// sent to /dev/null, waits for it, and reads the final counters straight out of
-// the BPF program's shared globals. The observer itself does almost no work —
-// the kernel did the counting.
+// Userspace loader. Order matters so we can filter by the target's PID:
+//   open  -> fork the target (gated, not yet exec'd) -> set target_pid in the
+//   program's read-only global -> load + attach -> release the target -> wait
+//   -> read the counters straight out of the program's shared globals.
+// The observer itself does almost no work; the kernel did the counting.
 
 #include <cstdio>
 #include <cstring>
@@ -24,9 +24,33 @@ int main(int argc, char** argv) {
     }
     char** cmd = &argv[sep + 1];
 
-    struct error_count* skel = error_count__open_and_load();
+    struct error_count* skel = error_count__open();
     if (!skel) {
-        std::fprintf(stderr, "ebpf_observer: failed to open/load BPF object\n");
+        std::fprintf(stderr, "ebpf_observer: failed to open BPF object\n");
+        return 1;
+    }
+
+    // Gate the child so it doesn't write until the program is attached.
+    int gate[2];
+    if (pipe(gate) != 0) { perror("pipe"); return 1; }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(gate[1]);
+        char c;
+        (void)!read(gate[0], &c, 1); // block until parent says go
+        close(gate[0]);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) dup2(devnull, STDOUT_FILENO);
+        execvp(cmd[0], cmd);
+        perror("execvp");
+        _exit(127);
+    }
+    close(gate[0]);
+
+    skel->rodata->target_pid = pid;          // filter to this PID
+    if (error_count__load(skel)) {
+        std::fprintf(stderr, "ebpf_observer: failed to load\n");
         return 1;
     }
     if (error_count__attach(skel)) {
@@ -35,14 +59,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    pid_t pid = fork();
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) dup2(devnull, STDOUT_FILENO);
-        execvp(cmd[0], cmd);
-        perror("execvp");
-        _exit(127);
-    }
+    char go = 1;
+    (void)!write(gate[1], &go, 1); // release the target
+    close(gate[1]);
+
     int status = 0;
     waitpid(pid, &status, 0);
 

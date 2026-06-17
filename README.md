@@ -62,6 +62,42 @@ counters, whereas `pipe | grep` copies every byte out; (3) **reach** — packets
 kernel functions, things with no userspace equivalent. The price is a fixed
 per-event cost and verifier-limited logic.
 
+## Why eBPF beats `strace` but loses to `pipe | grep`
+
+All three *observe* the same writes — the mechanism is what differs:
+
+- **`strace` (ptrace)** stops the target and **context-switches to the tracer on
+  every syscall** (stop → run strace → resume) — scheduler work *per event*. At one
+  tiny `write()` per line that's brutal. eBPF avoids it entirely.
+- **eBPF** runs its probe **in the kernel, in the target's own syscall path** — no
+  context switch, just a JIT'd function call. Far cheaper than ptrace, but still
+  **synchronous on the hot path**, so it adds a fixed cost to every `write()`.
+- **`pipe | grep`** doesn't intercept syscalls at all: the app writes to a pipe
+  (cheap, batched) and `grep` consumes it **on another core, in parallel** — *off*
+  the hot path. With a spare core and a cooperative stream, that beats inline probing.
+
+So eBPF skips ptrace's context-switch tax (→ **beats strace**), but pays a
+per-syscall cost a parallel pipe consumer avoids (→ **loses to pipe|grep here**).
+The catch: `pipe | grep` only works if you can redirect the app *and* you're happy
+to copy every byte to userspace. eBPF needs neither.
+
+## Good case vs bad case for eBPF
+
+eBPF's cost is **per event** (it peeks 5 bytes regardless of size); `pipe | grep`'s
+cost is **per byte** (it moves and scans everything). Sweep the message size and
+the winner flips:
+
+![good vs bad use case for eBPF](docs/img/sizes.png)
+
+- **Bad for eBPF — tiny, high-rate messages:** the per-syscall probe is almost pure
+  overhead; a parallel `pipe | grep` wins.
+- **Good for eBPF — large messages (or "I just want a summary"):** `pipe | grep`
+  must shovel every byte to userspace and scan it, while eBPF still just peeks the
+  prefix in-kernel and ships nothing — so it pulls ahead.
+- **The deepest good case isn't on the chart:** observing a **black-box process you
+  can't modify** (production, someone else's binary). There `pipe | grep` isn't even
+  possible — your alternatives are eBPF or `strace`, and eBPF wins by orders of magnitude.
+
 ## The catch (why eBPF isn't a parser)
 
 Look at [`src/error_count.bpf.c`](src/error_count.bpf.c): it only checks a

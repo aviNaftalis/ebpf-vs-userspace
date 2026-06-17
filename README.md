@@ -31,7 +31,15 @@ get to in time the kernel silently drops, so its bar is what one core can *actua
 pull out of a socket.
 
 <!-- RESULTS:START -->
-_no results yet — CI will fill this in_
+_Measured by CI on 2026-06-17 — kernel `6.17.0-1018-azure`, 4 CPUs, over a veth pair (software, not a real NIC; see the caveat above)._
+
+| payload | XDP (driver) | iptables (netfilter) | userspace (recv) |
+|---|--:|--:|--:|
+| 64 B | 763 K pps | 670 K pps | 534 K pps |
+| 1400 B | 723 K pps | 664 K pps | 494 K pps |
+
+Packets/sec each method drained from the same flood. XDP and iptables drop in the kernel and keep up with whatever the (software) senders offer; **userspace can't** — the gap is everything it pays per packet that the kernel paths skip.
+
 <!-- RESULTS:END -->
 
 ## The honest caveat (why these aren't the famous numbers)

@@ -129,7 +129,36 @@ def plot_cores():
     print("wrote cores.png")
 
 
+def plot_perevent():
+    path = os.path.join(os.path.dirname(RESULTS), "perevent.csv")
+    if not os.path.exists(path):
+        print("no perevent.csv — skipping contextswitch.png")
+        return
+    data = rows(path)
+    labels = [r["method"] for r in data]
+    ns = [float(r["ns_per_event"]) for r in data]
+    colors = ["#2ca02c" if "eBPF" in m else "#d62728" for m in labels]
+    with plt.xkcd():
+        fig, ax = plt.subplots(figsize=(8.5, 5.6))
+        ax.bar(labels, ns, color=colors)
+        ax.set_yscale("log")
+        ax.set_ylabel("nanoseconds added per write() (log)")
+        ax.set_title("Both intercept EVERY write(). eBPF handles it in the kernel;\n"
+                     "strace wakes a userspace tracer. The gap = the context switch.")
+        for i, v in enumerate(ns):
+            ax.text(i, v, f"{v:,.0f} ns", ha="center", va="bottom")
+        if len(ns) == 2 and ns[0] > 0:
+            ax.annotate(f"~{ns[1] / ns[0]:.0f}x — the cost of\nleaving the kernel\n(2 context switches/syscall)",
+                        xy=(1, ns[1]), xytext=(0.15, ns[1] * 0.5),
+                        arrowprops=dict(arrowstyle="->"))
+        fig.tight_layout()
+        fig.savefig(os.path.join(IMG, "contextswitch.png"), dpi=130)
+        plt.close(fig)
+    print("wrote contextswitch.png")
+
+
 def main():
+    plot_perevent()
     plot_results()
     plot_cores()
     plot_sizes()

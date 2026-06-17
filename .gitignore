@@ -6,6 +6,7 @@ src/*.skel.h
 results.md
 results.csv
 results_big.csv
+perevent.csv
 sizes.csv
 cores.csv
 *.o

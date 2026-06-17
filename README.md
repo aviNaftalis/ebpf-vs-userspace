@@ -14,6 +14,16 @@ measuring how much each one slows the process down vs unwatched (**baseline = 1�
 The workload: 200,000 lines, one `write()` each. eBPF hooks `write()` in the kernel;
 `pipe | grep` is the classic pipeline; `strace` uses `ptrace`. All return the right count.
 
+**eBPF's whole point — it skips the context switch.** eBPF and `strace` both intercept
+*every* `write()`, but `strace` has to wake a userspace tracer (2 context switches per
+syscall) while eBPF handles it in the kernel. Per event, that's the difference:
+
+![eBPF vs strace, per event](docs/img/contextswitch.png)
+
+That ~100× gap **is** the context switch. The charts below are the fuller picture —
+how much each way slows the watched process (small vs big writes), on one core, and
+across log-line sizes:
+
 ![small vs big writes: cost of each watcher](docs/img/results.png)
 ![same workload pinned to one core](docs/img/cores.png)
 ![cost vs log-line size](docs/img/sizes.png)

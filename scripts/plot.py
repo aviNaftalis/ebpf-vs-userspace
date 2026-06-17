@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FixedLocator, FuncFormatter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "results.csv")
@@ -88,6 +89,10 @@ def plot_matrix():
                         ax.text(xx, yy, f"{yy:g}x", ha="center", va="bottom", fontsize=8)
                 ax.set_yscale("log")
                 ax.set_ylim(bottom=0.8)
+                # plain tick labels (1, 2, 5, 10, 20...) — no "2x10^0"
+                ax.yaxis.set_major_locator(FixedLocator([1, 2, 3, 5, 10, 20, 50, 100]))
+                ax.yaxis.set_minor_locator(FixedLocator([]))
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
                 ax.axhline(1.0, color="gray", ls="--")
                 ax.set_xticks(range(len(sizes)))
                 ax.set_xticklabels([size_label.get(s, s) for s in sizes])

@@ -40,6 +40,34 @@ always ~100×):
 - **Busy process (real work per line) →** every overhead shrinks toward ~1.1× — eBPF
   is essentially free; the headline ratios were an artifact of a do-nothing baseline.
 
+## Where eBPF shines so bright nothing competes: XDP
+
+The benchmark above is *observability*, where eBPF is good but not always the
+fastest. eBPF's genuinely **unbeatable** use case is **XDP** — running the program
+in the NIC driver, *before* the kernel allocates an `sk_buff`. For dropping or
+redirecting packets (DDoS filtering, L4 load balancing) nothing in userspace is
+close:
+
+| dropping ~64 B packets, 1 core | drops/sec |
+|---|--:|
+| **XDP (eBPF, in the driver)** | **~26 M** |
+| iptables / netfilter | ~2 M |
+| userspace (recv + drop) | ~0.1–1 M |
+
+*(Published numbers: [Red Hat — 26 Mpps/core](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/8/html/configuring_and_managing_networking/using-xdp-filter-for-high-performance-traffic-filtering-to-prevent-ddos-attacks_configuring-and-managing-networking); iptables ~2 Mpps. The win is that iptables/userspace only see a packet *after* the kernel has built an `sk_buff` and walked the stack — under attack, that bookkeeping alone melts the box.)*
+
+**But it only shines with the knobs set right — turn them wrong and it's ordinary:**
+- **Packet size** — XDP wins on *small* packets (DDoS = millions of tiny pps, where per-packet overhead is everything). With large packets you're bandwidth-bound by the NIC, so XDP's per-packet edge barely shows.
+- **XDP mode** — *native* (driver) XDP is the fast path; *generic/SKB* mode runs after the `sk_buff` is allocated and gives up most of the advantage.
+- **Cores / RX queues** — XDP scales per-queue; more cores → more pps.
+- **The action** — dropping/redirecting *in-kernel* is the sweet spot. If you have to send the packet up to userspace anyway, the advantage collapses.
+
+So: small packets + native mode + in-kernel drop → 10×+ anything else; large packets, or generic mode, or a userspace handoff → XDP looks unremarkable.
+
+> Reproducing the 26 Mpps needs a real NIC and a line-rate traffic generator — a CI
+> VM can't make that traffic, so this table is published-numbers, not measured here.
+> (The measured charts above are the observability story, which CI *can* run.)
+
 ## When to use what
 - **eBPF** — watch a process you can't change, a firehose you only want summarized, or
   when there's no spare core. Cheap and invisible; can't *parse* (the verifier bans loops/regex).

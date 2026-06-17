@@ -47,11 +47,18 @@ approaches like `pipe | grep` stay cheap too. The charts below are the fuller pi
   ping-pong — the tracee is frozen while strace runs, so a second core buys it
   nothing and only adds a cross-core wakeup per syscall. One core = cheap local
   switches.
-- **eBPF ≈ `pipe | grep` even on one core**, even though only eBPF avoids userspace.
-  The pipe *buffers* (~64 KB), so `grep` causes a context switch every few thousand
-  writes, not per write — batched and cheap. eBPF does a little work on *every*
-  write instead. The per-*syscall* switch is what makes `strace` 100×; the pipe
-  dodges it by batching.
+- **Why does eBPF (~650 ns/event) cost *more* than `pipe | grep` (~235 ns) if eBPF
+  never context-switches?** Because the per-event chart measures cost *to the watched
+  process*, and the two put the work in different places. eBPF runs the check **inline
+  on the process's own thread** — no switch, but synchronous, so all of it lands on the
+  process. `pipe | grep` just copies bytes to the pipe and lets `grep` scan them **on
+  another core** — so the process only pays the cheap pipe-write; the scan is off its
+  clock. Across *both* cores `pipe | grep` burns *more* total CPU — it just keeps it off
+  the hot path (which needs a spare core: pin to one and it loses that, see above).
+- **At 64 KB writes the pipe's batching collapses.** The pipe buffer *is* ~64 KB, so a
+  64 KB write fills it *every* time → the process blocks per write → it switches per
+  write *and* shoves 64 KB through each time. That's why `pipe | grep` explodes in the
+  size chart while eBPF (peeks 5 bytes, no switch) stays flat.
 
 ## When to use what
 - **eBPF** — watch a process you can't change, or firehose data you only want a

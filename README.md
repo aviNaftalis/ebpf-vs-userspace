@@ -18,6 +18,18 @@ The workload: 200,000 lines, one `write()` each. eBPF hooks `write()` in the ker
 ![same workload pinned to one core](docs/img/cores.png)
 ![cost vs log-line size](docs/img/sizes.png)
 
+## Two numbers that look wrong (but aren't)
+
+- **`strace` is *faster* pinned to one core.** ptrace is a forced tracer↔tracee
+  ping-pong — the tracee is frozen while strace runs, so a second core buys it
+  nothing and only adds a cross-core wakeup per syscall. One core = cheap local
+  switches.
+- **eBPF ≈ `pipe | grep` even on one core**, even though only eBPF avoids userspace.
+  The pipe *buffers* (~64 KB), so `grep` causes a context switch every few thousand
+  writes, not per write — batched and cheap. eBPF does a little work on *every*
+  write instead. The per-*syscall* switch is what makes `strace` 100×; the pipe
+  dodges it by batching.
+
 ## When to use what
 - **eBPF** — watch a process you can't change, or firehose data you only want a
   summary of. Cheap and invisible; can't *parse* (the verifier bans loops/regex).

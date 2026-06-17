@@ -89,6 +89,11 @@ the winner flips:
 
 ![good vs bad use case for eBPF](docs/img/sizes.png)
 
+*(eBPF's slowdown reads higher here than in the headline table because this sweep's
+baseline writes to `/dev/null` — nearly free — so any observation is a larger
+multiple. The **shape** is the point: eBPF flat (per event), `pipe|grep` rising
+(per byte), crossing around ~16–32 KB.)*
+
 - **Bad for eBPF — tiny, high-rate messages:** the per-syscall probe is almost pure
   overhead; a parallel `pipe | grep` wins.
 - **Good for eBPF — large messages (or "I just want a summary"):** `pipe | grep`

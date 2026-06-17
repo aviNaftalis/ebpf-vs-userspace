@@ -7,6 +7,11 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+// vmlinux.h gives us the structs (ethhdr, iphdr) and the xdp_action enum, but not
+// these constants — they live in uapi headers we can't include alongside vmlinux.h.
+#define ETH_P_IP 0x0800
+#define IPPROTO_UDP 17
+
 __u64 packets = 0;   // .bss — read back from userspace via the skeleton
 __u64 bytes = 0;
 

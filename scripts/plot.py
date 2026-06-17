@@ -137,20 +137,22 @@ def plot_perevent():
     data = rows(path)
     labels = [r["method"] for r in data]
     ns = [float(r["ns_per_event"]) for r in data]
-    colors = ["#2ca02c" if "eBPF" in m else "#d62728" for m in labels]
+    cmap = {"eBPF": "#2ca02c", "pipe": "#ff7f0e", "strace": "#d62728"}
+    colors = [next((c for k, c in cmap.items() if k in m), "#1f77b4") for m in labels]
     with plt.xkcd():
-        fig, ax = plt.subplots(figsize=(10, 5.6))
+        fig, ax = plt.subplots(figsize=(11, 5.8))
         ax.bar(labels, ns, color=colors)
         ax.set_yscale("log")
-        ax.set_ylabel("nanoseconds added per write() (log)")
-        ax.set_title("eBPF handles each write() in the kernel;\n"
-                     "strace wakes userspace. The gap = the context switch.")
+        ax.set_ylabel("ns added per write() (log)")
+        ax.set_title("What leaving the kernel costs, per write()\n"
+                     "strace switches EVERY syscall · pipe|grep batches (~1 per 64 KB) · "
+                     "eBPF never switches")
         for i, v in enumerate(ns):
             ax.text(i, v, f"{v:,.0f} ns", ha="center", va="bottom")
-        if len(ns) == 2 and ns[0] > 0:
-            ax.annotate(f"~{ns[1] / ns[0]:.0f}x — the cost of\nleaving the kernel\n(2 context switches/syscall)",
-                        xy=(1, ns[1]), xytext=(0.15, ns[1] * 0.5),
-                        arrowprops=dict(arrowstyle="->"))
+        si = next((i for i, m in enumerate(labels) if "strace" in m), None)
+        if si is not None and ns[0] > 0:
+            ax.annotate("a context switch\nEVERY syscall", xy=(si, ns[si]),
+                        xytext=(si - 1.4, ns[si] * 0.4), arrowprops=dict(arrowstyle="->"))
         fig.tight_layout()
         fig.savefig(os.path.join(IMG, "contextswitch.png"), dpi=130)
         plt.close(fig)

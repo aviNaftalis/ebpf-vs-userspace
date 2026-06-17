@@ -66,8 +66,9 @@ CSV
 # The gap is the context switch — eBPF's whole point.
 cat > "$ROOT/perevent.csv" <<CSV
 method,ns_per_event
-eBPF (in-kernel),$(nsw "$ebpf_ms")
-strace (userspace),$(nsw "$strace_ms")
+eBPF (no switch),$(nsw "$ebpf_ms")
+pipe|grep (batched),$(nsw "$pipe_ms")
+strace (switch/syscall),$(nsw "$strace_ms")
 CSV
 
 cat <<EOF

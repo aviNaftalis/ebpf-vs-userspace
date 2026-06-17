@@ -2,92 +2,67 @@
 
 [![ci](https://github.com/aviNaftalis/ebpf-vs-userspace/actions/workflows/ci.yml/badge.svg)](https://github.com/aviNaftalis/ebpf-vs-userspace/actions/workflows/ci.yml)
 
-Count a running process's `ERROR` log lines **without stopping it** — four ways,
-measuring how much each one slows the process down vs unwatched (**baseline = 1×**).
+Count a running process's `ERROR` log lines **without stopping it** — three ways:
+**eBPF** (a kernel hook on `write()`), the classic **`pipe | grep`**, or **`strace`**
+(`ptrace`). How much does each slow the process down? It depends on three knobs:
+**write size, spare cores, and whether the process actually does work.**
 
 **TL;DR**
-- **eBPF beats `strace` ~100×** — no per-syscall context switch. (Robust.)
-- **eBPF ≈ `pipe | grep`** (both ~2–3×) — `pipe | grep` only edges ahead when `grep`
-  gets its own core; pin everything to one core and they land together.
-- **Bigger log lines → eBPF wins** — it peeks 5 bytes; `grep` scans every byte.
+- **`strace`: always ~100× — never in production.** It context-switches to a userspace
+  tracer on *every* syscall.
+- **eBPF vs `pipe | grep`: it depends** (see the matrix). `pipe | grep` wins *only* for
+  small writes *with a spare core*; eBPF wins on big writes or one core.
+- **On a process that does real work, every overhead is tiny (~1.1×).** The scary
+  "2.5×" only happens when the process does nothing but write to `/dev/null`.
 
-The workload: 200,000 lines, one `write()` each. eBPF hooks `write()` in the kernel;
-`pipe | grep` is the classic pipeline; `strace` uses `ptrace`. All return the right count.
+## Why `strace` is hopeless: the context switch
 
-**The real lesson: a context switch *per event* is the killer — not userspace itself.**
-All three watch every `write()`; what differs is how often each leaves the kernel:
+![per-event cost — how often each leaves the kernel](docs/img/contextswitch.png)
 
-![per-event cost: how often each leaves the kernel](docs/img/contextswitch.png)
+All three watch every `write()`; the difference is **how often each leaves the
+kernel**. `strace` switches per syscall (~100×); `pipe | grep` *batches* (the pipe
+buffers ~64 KB, so ~1 switch per few thousand writes); eBPF *never* switches.
+(eBPF's ~600 ns is inline on the process's own thread; `pipe | grep`'s ~235 ns is
+just the pipe-write — `grep` scans on another core.)
 
-- **strace** switches to a userspace tracer on *every* syscall → ~100× per event.
-- **pipe | grep** switches too — but the pipe buffers (~64 KB), so it's ~1 switch per
-  few thousand writes (batched), and `grep` runs on another core. Cheap.
-- **eBPF** never switches — it runs in the kernel.
+## The full picture: every knob
 
-So eBPF's clear win is over per-event interceptors like `strace`; batched/offloaded
-approaches like `pipe | grep` stay cheap too. The charts below are the fuller picture
-(slowdown small vs big writes, on one core, across log-line sizes):
+eBPF vs `pipe | grep` across **write size × cores × process load** (`strace` omitted —
+always ~100×):
 
-![small vs big writes: cost of each watcher](docs/img/results.png)
-![same workload pinned to one core](docs/img/cores.png)
-![cost vs log-line size](docs/img/sizes.png)
+![eBPF vs pipe|grep across all parameters](docs/img/matrix.png)
 
-## A few results that look wrong (but aren't)
-
-- **"eBPF slows my process ~2.5×?!"** Not really — that ratio is against a baseline
-  that does almost nothing (a `write()` to `/dev/null`). The honest cost is the
-  **ns eBPF adds per write** (in the table): a fixed few hundred ns, which is
-  [<2–5% on a real workload](https://www.brendangregg.com/ebpf.html). Most of that
-  cost is the per-event probe *machinery* (tracepoint dispatch + running the program),
-  not the payload read — skipping the read ("count only") saves only ~10%. The point:
-  any per-syscall eBPF carries a fixed sub-µs cost — huge next to a `/dev/null` write,
-  negligible next to real work. (eBPF already runs **entirely in the kernel** per
-  event — no per-event hop to userspace.)
-- **`strace` is *faster* pinned to one core.** ptrace is a forced tracer↔tracee
-  ping-pong — the tracee is frozen while strace runs, so a second core buys it
-  nothing and only adds a cross-core wakeup per syscall. One core = cheap local
-  switches.
-- **Why does eBPF (~650 ns/event) cost *more* than `pipe | grep` (~235 ns) if eBPF
-  never context-switches?** Because the per-event chart measures cost *to the watched
-  process*, and the two put the work in different places. eBPF runs the check **inline
-  on the process's own thread** — no switch, but synchronous, so all of it lands on the
-  process. `pipe | grep` just copies bytes to the pipe and lets `grep` scan them **on
-  another core** — so the process only pays the cheap pipe-write; the scan is off its
-  clock. Across *both* cores `pipe | grep` burns *more* total CPU — it just keeps it off
-  the hot path (which needs a spare core: pin to one and it loses that, see above).
-- **At 64 KB writes the pipe's batching collapses.** The pipe buffer *is* ~64 KB, so a
-  64 KB write fills it *every* time → the process blocks per write → it switches per
-  write *and* shoves 64 KB through each time. That's why `pipe | grep` explodes in the
-  size chart while eBPF (peeks 5 bytes, no switch) stays flat.
+- **Small writes + a spare core →** `pipe | grep` wins: it batches its switches and
+  offloads the scan to another core.
+- **Big writes (≈ the pipe's 64 KB buffer) →** batching collapses (it fills every
+  write) and it must move every byte → **eBPF wins**.
+- **One core →** nothing to offload to → eBPF wins or ties.
+- **Busy process (real work per line) →** every overhead shrinks toward ~1.1× — eBPF
+  is essentially free; the headline ratios were an artifact of a do-nothing baseline.
 
 ## When to use what
-- **eBPF** — watch a process you can't change, or firehose data you only want a
-  summary of. Cheap and invisible; can't *parse* (the verifier bans loops/regex).
-- **pipe | grep** — you own the app and have a spare core.
+- **eBPF** — watch a process you can't change, a firehose you only want summarized, or
+  when there's no spare core. Cheap and invisible; can't *parse* (the verifier bans loops/regex).
+- **pipe | grep** — you own the app, output is small/streamed, and you have a spare core.
 - **strace** — debugging only; brutal at scale.
 
-<details><summary>exact numbers (auto-refreshed by CI)</summary>
+<details><summary>exact numbers for the headline config (auto-refreshed by CI)</summary>
 
 <!-- RESULTS:START -->
-_Generated by CI on 2026-06-17, kernel `6.17.0-1018-azure`, 4 CPUs. Workload: 200000 lines, 10% ERROR, one `write()` each (expected ERROR count = 20000)._
-
-| method | wall (ms) | throughput (K lines/s) | slowdown vs baseline | ERROR count correct? |
-|---|--:|--:|--:|:--:|
-| baseline (unobserved) | 78 | 2564 | 1.0× | – |
-| **eBPF (in-kernel)** | 208 | 962 | 2.7× | yes |
-| pipe \| grep (userspace) | 125 | 1600 | 1.6× | yes |
-| strace / ptrace (userspace) | 13325 | 15 | 170.8× | yes |
-
-**Per-`write()` overhead (the honest number):** the bare baseline write costs ~390 ns. eBPF adds **~650 ns** (prefix check) — or just **~475 ns** if it only counts (skipping the user-memory read). The big ×'s above are only because the baseline write (to `/dev/null`) is nearly free; on a process doing real work per syscall, ~650 ns is well under 1%.
-
+_CI populates this on every push to `main`._
 <!-- RESULTS:END -->
 
 </details>
 
 ## Run it
 
-Linux with BTF + root: `make && sudo ./scripts/bench.sh && python3 scripts/plot.py`.
-CI does this on `ubuntu-latest` and commits the refreshed charts here on every push.
-Code: [`error_count.bpf.c`](src/error_count.bpf.c) ·
+Linux with BTF (`/sys/kernel/btf/vmlinux`) + root:
+
+```bash
+make && sudo ./scripts/bench.sh && python3 scripts/plot.py
+```
+
+CI runs it on `ubuntu-latest` and commits the refreshed charts + numbers here on every
+push. Code: [`error_count.bpf.c`](src/error_count.bpf.c) ·
 [`ebpf_observer.cpp`](src/ebpf_observer.cpp) · [`logtarget.cpp`](src/logtarget.cpp) ·
 [`bench.sh`](scripts/bench.sh) · [`plot.py`](scripts/plot.py).

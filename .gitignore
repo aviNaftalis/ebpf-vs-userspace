@@ -5,6 +5,7 @@ src/*.bpf.o
 src/*.skel.h
 results.md
 results.csv
+results_big.csv
 sizes.csv
 cores.csv
 *.o

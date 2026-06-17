@@ -14,7 +14,7 @@ measuring how much each one slows the process down vs unwatched (**baseline = 1Ã
 The workload: 200,000 lines, one `write()` each. eBPF hooks `write()` in the kernel;
 `pipe | grep` is the classic pipeline; `strace` uses `ptrace`. All return the right count.
 
-![cost of each method](docs/img/results.png)
+![small vs big writes: cost of each watcher](docs/img/results.png)
 ![same workload pinned to one core](docs/img/cores.png)
 ![cost vs log-line size](docs/img/sizes.png)
 

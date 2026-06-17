@@ -31,30 +31,31 @@ def rows(path):
         return list(csv.DictReader(f))
 
 
-def plot_results():
-    data = rows(RESULTS)
+def _bars(ax, data, title):
     methods = [r["method"] for r in data]
     slow = [float(r["slowdown"]) for r in data]
-    colors = [COLOR.get(m, "#1f77b4") for m in methods]
+    ax.bar(methods, slow, color=[COLOR.get(m, "#1f77b4") for m in methods])
+    ax.set_yscale("log")
+    ax.set_ylim(bottom=0.85)
+    ax.axhline(1.0, color="gray", ls="--")
+    ax.set_title(title)
+    for i, v in enumerate(slow):
+        ax.text(i, v, f"{v:g}x", ha="center", va="bottom")
+    ax.tick_params(axis="x", rotation=12)
 
+
+def plot_results():
+    big_path = os.path.join(os.path.dirname(RESULTS), "results_big.csv")
+    have_big = os.path.exists(big_path)
     with plt.xkcd():
-        fig, ax = plt.subplots(figsize=(9, 5.6))
-        ax.bar(methods, slow, color=colors)
-        ax.set_yscale("log")
-        ax.set_ylim(bottom=0.85)
-        ax.axhline(1.0, color="gray", ls="--")
-        ax.set_ylabel("times slower than UNWATCHED (log)")
-        ax.set_title("How much does each way of counting a process's\n"
-                     "ERROR lines slow that process down?\n"
-                     "(baseline = nobody watching = 1x)")
-        for i, v in enumerate(slow):
-            ax.text(i, v, f"{v:g}x", ha="center", va="bottom")
-        if "strace" in methods:
-            i = methods.index("strace")
-            ax.annotate("strace stops the\nprocess on EVERY\nsyscall",
-                        xy=(i, slow[i]), xytext=(i - 1.5, slow[i] * 0.35),
-                        arrowprops=dict(arrowstyle="->"))
-        ax.tick_params(axis="x", rotation=10)
+        fig, axes = plt.subplots(1, 2 if have_big else 1, figsize=(12.5, 5.6),
+                                 squeeze=False)
+        _bars(axes[0][0], rows(RESULTS), "small writes (~40 B per line)")
+        axes[0][0].set_ylabel("times slower than UNWATCHED (log)")
+        if have_big:
+            _bars(axes[0][1], rows(big_path), "big writes (64 KB per line)")
+        fig.suptitle("How much each watcher slows the process (1x = unwatched)\n"
+                     "small: eBPF ~ pipe|grep    big: pipe|grep pays per byte, eBPF doesn't")
         fig.tight_layout()
         fig.savefig(os.path.join(IMG, "results.png"), dpi=130)
         plt.close(fig)

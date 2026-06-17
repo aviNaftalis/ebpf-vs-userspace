@@ -18,8 +18,15 @@ The workload: 200,000 lines, one `write()` each. eBPF hooks `write()` in the ker
 ![same workload pinned to one core](docs/img/cores.png)
 ![cost vs log-line size](docs/img/sizes.png)
 
-## Two numbers that look wrong (but aren't)
+## A few results that look wrong (but aren't)
 
+- **"eBPF slows my process ~2.5×?!"** Not really — that ratio is against a baseline
+  that does almost nothing (a `write()` to `/dev/null`). The honest cost is the
+  **ns eBPF adds per write** (in the table): a fixed few hundred ns, which is
+  [<2–5% on a real workload](https://www.brendangregg.com/ebpf.html). Most of it is
+  the per-event *user-memory read* — the "count only" number (which skips it) is much
+  cheaper. Lesson: don't read payload on a hot path unless you must. (eBPF already
+  runs **entirely in the kernel** per event — no per-event hop to userspace.)
 - **`strace` is *faster* pinned to one core.** ptrace is a forced tracer↔tracee
   ping-pong — the tracee is frozen while strace runs, so a second core buys it
   nothing and only adds a cross-core wakeup per syscall. One core = cheap local

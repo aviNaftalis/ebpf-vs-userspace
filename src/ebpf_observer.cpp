@@ -16,10 +16,13 @@
 
 int main(int argc, char** argv) {
     int sep = -1;
-    for (int i = 1; i < argc; ++i)
+    bool count_only = false;
+    for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--") == 0) { sep = i; break; }
+        if (std::strcmp(argv[i], "--count-only") == 0) count_only = true;
+    }
     if (sep < 0 || sep + 1 >= argc) {
-        std::fprintf(stderr, "usage: %s -- <command> [args...]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--count-only] -- <command> [args...]\n", argv[0]);
         return 2;
     }
     char** cmd = &argv[sep + 1];
@@ -29,6 +32,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "ebpf_observer: failed to open BPF object\n");
         return 1;
     }
+    skel->rodata->read_payload = count_only ? 0 : 1; // count-only skips the user read
 
     // Gate the child so it doesn't write until the program is attached.
     int gate[2];

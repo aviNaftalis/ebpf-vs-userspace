@@ -73,8 +73,8 @@ EOF
 # move and scan every byte. So tiny messages favor pipe|grep, big messages favor
 # eBPF. strace is omitted (constant-bad, and slow). Writes to /dev/null except
 # the pipe path. Results -> sizes.csv for the second chart.
-SIZES=${SIZES:-"32 128 512 2048 8192"}
-SWEEP_N=${SWEEP_N:-50000}
+SIZES=${SIZES:-"64 256 1024 4096 16384 65536"}
+SWEEP_N=${SWEEP_N:-20000}
 SIZES_CSV="$ROOT/sizes.csv"
 sl() { awk -v a="$1" -v b="$bms" 'BEGIN{ printf "%.2f", (b>0)? a/b : 0 }'; }
 echo "method,bytes,wall_ms,slowdown" > "$SIZES_CSV"

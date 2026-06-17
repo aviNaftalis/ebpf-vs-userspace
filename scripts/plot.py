@@ -94,8 +94,43 @@ def plot_sizes():
     print("wrote sizes.png")
 
 
+def plot_cores():
+    path = os.path.join(os.path.dirname(RESULTS), "cores.csv")
+    if not os.path.exists(path):
+        print("no cores.csv — skipping cores.png")
+        return
+    data = rows(path)
+    methods = ["baseline", "eBPF", "pipe|grep"]
+    configs = ["all cores", "1 core"]
+    val = {(r["method"], r["cpus"]): float(r["slowdown"]) for r in data}
+    with plt.xkcd():
+        fig, ax = plt.subplots(figsize=(9, 5.6))
+        w = 0.38
+        for j, cfg in enumerate(configs):
+            xs = [i + (j - 0.5) * w for i in range(len(methods))]
+            ys = [val.get((m, cfg), 0) for m in methods]
+            ax.bar(xs, ys, w, label=cfg,
+                   color=[COLOR[m] for m in methods],
+                   hatch=("" if j == 0 else "////"), edgecolor="black")
+            for x, y in zip(xs, ys):
+                ax.text(x, y, f"{y:g}x", ha="center", va="bottom")
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=0.85)
+        ax.set_xticks(range(len(methods)))
+        ax.set_xticklabels(methods)
+        ax.set_ylabel("times slower than UNWATCHED (log)")
+        ax.set_title("Give grep its own core, and it wins.\n"
+                     "Pin everything to ONE core (hatched), and eBPF wins.")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(os.path.join(IMG, "cores.png"), dpi=130)
+        plt.close(fig)
+    print("wrote cores.png")
+
+
 def main():
     plot_results()
+    plot_cores()
     plot_sizes()
 
 

@@ -6,4 +6,5 @@ src/*.skel.h
 results.md
 results.csv
 sizes.csv
+cores.csv
 *.o

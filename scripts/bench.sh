@@ -86,3 +86,21 @@ for B in $SIZES; do
   echo "eBPF,$B,$ems,$(sl "$ems")"      >> "$SIZES_CSV"
   echo "pipe|grep,$B,$pms,$(sl "$pms")" >> "$SIZES_CSV"
 done
+
+# --- same-core: pin everything to ONE cpu (taskset -c 0) ------------------
+# pipe|grep's edge was that grep ran on a spare core. Take it away and grep
+# fights the process for the CPU; eBPF runs inline in the kernel and doesn't care.
+PIN="taskset -c 0"
+ratio() { awk -v a="$1" -v b="$2" 'BEGIN{ printf "%.2f", (b>0)? a/b : 0 }'; }
+b1=$(mintime $PIN ./logtarget --lines "$N" --error-pct "$P")
+e1=$(mintime $PIN ./ebpf_observer -- ./logtarget --lines "$N" --error-pct "$P")
+p1=$(mintime $PIN bash -c "./logtarget --lines $N --error-pct $P | grep -c ERROR")
+{
+  echo "method,cpus,slowdown"
+  echo "baseline,all cores,1.00"
+  echo "eBPF,all cores,$(ratio "$ebpf_ms" "$base_ms")"
+  echo "pipe|grep,all cores,$(ratio "$pipe_ms" "$base_ms")"
+  echo "baseline,1 core,1.00"
+  echo "eBPF,1 core,$(ratio "$e1" "$b1")"
+  echo "pipe|grep,1 core,$(ratio "$p1" "$b1")"
+} > "$ROOT/cores.csv"

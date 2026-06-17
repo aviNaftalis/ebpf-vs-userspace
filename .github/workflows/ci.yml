@@ -46,7 +46,7 @@ jobs:
         run: |
           python3 scripts/plot.py results.csv          # -> docs/img/results.png + sizes.png
           python3 scripts/update_readme.py results.md  # table -> README markers
-          git add docs/img/results.png docs/img/sizes.png README.md
+          git add docs/img/results.png docs/img/sizes.png docs/img/cores.png README.md
           if ! git diff --cached --quiet; then
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"

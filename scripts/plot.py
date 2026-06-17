@@ -119,8 +119,8 @@ def plot_cores():
         ax.set_xticks(range(len(methods)))
         ax.set_xticklabels(methods)
         ax.set_ylabel("times slower than UNWATCHED (log)")
-        ax.set_title("Give grep its own core, and it wins.\n"
-                     "Pin everything to ONE core (hatched), and eBPF wins.")
+        ax.set_title("All cores vs pinned to ONE core (hatched)\n"
+                     "strace is hopeless either way; eBPF and pipe|grep stay close")
         ax.legend()
         fig.tight_layout()
         fig.savefig(os.path.join(IMG, "cores.png"), dpi=130)

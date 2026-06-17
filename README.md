@@ -6,10 +6,10 @@ Count a running process's `ERROR` log lines **without stopping it** — four way
 measuring how much each one slows the process down vs unwatched (**baseline = 1×**).
 
 **TL;DR**
-- **eBPF beats `strace` ~100×** — no per-syscall context switch.
-- **`pipe | grep` beats eBPF** — but *only* because `grep` gets its own core.
-- **Pin to one core → eBPF wins** (`grep` can't run in parallel anymore).
-- **Bigger log lines → eBPF wins** anyway — it peeks 5 bytes; `grep` scans every byte.
+- **eBPF beats `strace` ~100×** — no per-syscall context switch. (Robust.)
+- **eBPF ≈ `pipe | grep`** (both ~2–3×) — `pipe | grep` only edges ahead when `grep`
+  gets its own core; pin everything to one core and they land together.
+- **Bigger log lines → eBPF wins** — it peeks 5 bytes; `grep` scans every byte.
 
 The workload: 200,000 lines, one `write()` each. eBPF hooks `write()` in the kernel;
 `pipe | grep` is the classic pipeline; `strace` uses `ptrace`. All return the right count.

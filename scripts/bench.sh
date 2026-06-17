@@ -95,12 +95,15 @@ ratio() { awk -v a="$1" -v b="$2" 'BEGIN{ printf "%.2f", (b>0)? a/b : 0 }'; }
 b1=$(mintime $PIN ./logtarget --lines "$N" --error-pct "$P")
 e1=$(mintime $PIN ./ebpf_observer -- ./logtarget --lines "$N" --error-pct "$P")
 p1=$(mintime $PIN bash -c "./logtarget --lines $N --error-pct $P | grep -c ERROR")
+s1=$(mintime $PIN strace -f -s 16 -e trace=write -o /tmp/strace.out ./logtarget --lines "$N" --error-pct "$P")
 {
   echo "method,cpus,slowdown"
   echo "baseline,all cores,1.00"
   echo "eBPF,all cores,$(ratio "$ebpf_ms" "$base_ms")"
   echo "pipe|grep,all cores,$(ratio "$pipe_ms" "$base_ms")"
+  echo "strace,all cores,$(ratio "$strace_ms" "$base_ms")"
   echo "baseline,1 core,1.00"
   echo "eBPF,1 core,$(ratio "$e1" "$b1")"
   echo "pipe|grep,1 core,$(ratio "$p1" "$b1")"
+  echo "strace,1 core,$(ratio "$s1" "$b1")"
 } > "$ROOT/cores.csv"

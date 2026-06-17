@@ -100,7 +100,7 @@ def plot_cores():
         print("no cores.csv — skipping cores.png")
         return
     data = rows(path)
-    methods = ["baseline", "eBPF", "pipe|grep"]
+    methods = ["baseline", "eBPF", "pipe|grep", "strace"]
     configs = ["all cores", "1 core"]
     val = {(r["method"], r["cpus"]): float(r["slowdown"]) for r in data}
     with plt.xkcd():

@@ -139,12 +139,12 @@ def plot_perevent():
     ns = [float(r["ns_per_event"]) for r in data]
     colors = ["#2ca02c" if "eBPF" in m else "#d62728" for m in labels]
     with plt.xkcd():
-        fig, ax = plt.subplots(figsize=(8.5, 5.6))
+        fig, ax = plt.subplots(figsize=(10, 5.6))
         ax.bar(labels, ns, color=colors)
         ax.set_yscale("log")
         ax.set_ylabel("nanoseconds added per write() (log)")
-        ax.set_title("Both intercept EVERY write(). eBPF handles it in the kernel;\n"
-                     "strace wakes a userspace tracer. The gap = the context switch.")
+        ax.set_title("eBPF handles each write() in the kernel;\n"
+                     "strace wakes userspace. The gap = the context switch.")
         for i, v in enumerate(ns):
             ax.text(i, v, f"{v:,.0f} ns", ha="center", va="bottom")
         if len(ns) == 2 and ns[0] > 0:

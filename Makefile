@@ -1,4 +1,4 @@
-# Build the eBPF object (CO-RE), generate its skeleton, and the userspace tools.
+# Build the XDP object (CO-RE), generate its skeleton, and the userspace tools.
 # Requires: clang, bpftool, libbpf-dev, and /sys/kernel/btf/vmlinux (BTF).
 
 CLANG   ?= clang
@@ -10,22 +10,25 @@ BPF_CFLAGS := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I.
 CXXFLAGS   := -O2 -std=c++17 -Wall
 
 .PHONY: all clean
-all: logtarget ebpf_observer
+all: xdp_loader udp_flood udp_sink
 
 vmlinux.h:
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $@
 
-src/error_count.bpf.o: src/error_count.bpf.c vmlinux.h
+src/xdp_count.bpf.o: src/xdp_count.bpf.c vmlinux.h
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
-src/error_count.skel.h: src/error_count.bpf.o
-	$(BPFTOOL) gen skeleton $< name error_count > $@
+src/xdp_count.skel.h: src/xdp_count.bpf.o
+	$(BPFTOOL) gen skeleton $< name xdp_count > $@
 
-ebpf_observer: src/ebpf_observer.cpp src/error_count.skel.h
-	$(CXX) $(CXXFLAGS) -Isrc src/ebpf_observer.cpp -lbpf -lelf -lz -o $@
+xdp_loader: src/xdp_loader.cpp src/xdp_count.skel.h
+	$(CXX) $(CXXFLAGS) -Isrc src/xdp_loader.cpp -lbpf -lelf -lz -o $@
 
-logtarget: src/logtarget.cpp
+udp_flood: src/udp_flood.cpp
+	$(CXX) $(CXXFLAGS) $< -o $@
+
+udp_sink: src/udp_sink.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@
 
 clean:
-	rm -f logtarget ebpf_observer vmlinux.h src/*.bpf.o src/*.skel.h
+	rm -f xdp_loader udp_flood udp_sink vmlinux.h src/*.bpf.o src/*.skel.h

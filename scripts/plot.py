@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Render the eBPF-vs-userspace charts (hand-drawn / xkcd style) into docs/img/.
+"""Render the XDP packet-drop chart (hand-drawn / xkcd style) into docs/img/xdp.png.
 
-  contextswitch.png  per-event cost: how often each method leaves the kernel
-  matrix.png         eBPF vs pipe|grep across write size x cores x process load
+Reads packets.csv (bytes,method,pps): packets/sec each method drained from the
+same UDP flood, at small vs large payloads.
 
-Usage: python3 scripts/plot.py [results.csv]   (needs matplotlib + numpy)
+Usage: python3 scripts/plot.py [packets.csv]   (needs matplotlib + numpy)
 """
 import csv
 import os
@@ -14,104 +14,61 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FixedLocator, FuncFormatter
+from matplotlib.ticker import FuncFormatter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RESULTS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "results.csv")
-DATADIR = os.path.dirname(RESULTS)
+DATA = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "packets.csv")
 IMG = os.path.join(ROOT, "docs", "img")
 os.makedirs(IMG, exist_ok=True)
-MCOL = {"eBPF": "#2ca02c", "pipe": "#ff7f0e", "strace": "#d62728"}
+
+COLOR = {"XDP": "#2ca02c", "iptables": "#1f77b4", "userspace": "#d62728"}
+METHODS = ["XDP", "iptables", "userspace"]
+LABELS = {"XDP": "XDP\n(driver)", "iptables": "iptables\n(netfilter)",
+          "userspace": "userspace\n(recv)"}
 
 
-def rows(path):
-    with open(path, newline="") as f:
-        return list(csv.DictReader(f))
-
-
-def color_for(label):
-    return next((c for k, c in MCOL.items() if k in label), "#1f77b4")
-
-
-def plot_perevent():
-    path = os.path.join(DATADIR, "perevent.csv")
-    if not os.path.exists(path):
-        print("no perevent.csv — skipping contextswitch.png")
-        return
-    data = rows(path)
-    labels = [r["method"] for r in data]
-    ns = [float(r["ns_per_event"]) for r in data]
-    with plt.xkcd():
-        fig, ax = plt.subplots(figsize=(11, 5.8))
-        ax.bar(labels, ns, color=[color_for(m) for m in labels])
-        ax.set_yscale("log")
-        ax.set_ylabel("ns added per write() (log)")
-        ax.set_title("What leaving the kernel costs, per write()\n"
-                     "strace switches EVERY syscall · pipe|grep batches (~1 per 64 KB) · "
-                     "eBPF never switches")
-        for i, v in enumerate(ns):
-            ax.text(i, v, f"{v:,.0f} ns", ha="center", va="bottom")
-        si = next((i for i, m in enumerate(labels) if "strace" in m), None)
-        if si is not None:
-            ax.annotate("a context switch\nEVERY syscall", xy=(si, ns[si]),
-                        xytext=(si - 1.4, ns[si] * 0.4), arrowprops=dict(arrowstyle="->"))
-        fig.tight_layout()
-        fig.savefig(os.path.join(IMG, "contextswitch.png"), dpi=130)
-        plt.close(fig)
-    print("wrote contextswitch.png")
-
-
-def plot_matrix():
-    path = os.path.join(DATADIR, "matrix.csv")
-    if not os.path.exists(path):
-        print("no matrix.csv — skipping matrix.png")
-        return
-    d = {}
-    sizes = []
-    for r in rows(path):
-        d[(r["size"], r["cores"], r["load"], r["method"])] = float(r["slowdown"])
-        if r["size"] not in sizes:
-            sizes.append(r["size"])
-    sizes = sorted(sizes, key=int)
-    size_label = {"64": "small\n(64 B)", "65536": "big\n(64 KB)"}
-    cores_list, loads, methods = ["1", "2"], ["idle", "busy"], ["eBPF", "pipe|grep"]
-    with plt.xkcd():
-        fig, axes = plt.subplots(2, 2, figsize=(12, 8.5), squeeze=False)
-        for ri, c in enumerate(cores_list):
-            for ci, ld in enumerate(loads):
-                ax = axes[ri][ci]
-                w = 0.38
-                for mi, m in enumerate(methods):
-                    xs = [xi + (mi - 0.5) * w for xi in range(len(sizes))]
-                    ys = [d.get((s, c, ld, m), 0) for s in sizes]
-                    ax.bar(xs, ys, w, color=color_for(m), label=m)
-                    for xx, yy in zip(xs, ys):
-                        ax.text(xx, yy, f"{yy:g}x", ha="center", va="bottom", fontsize=8)
-                ax.set_yscale("log")
-                ax.set_ylim(bottom=0.8)
-                # plain tick labels (1, 2, 5, 10, 20...) — no "2x10^0"
-                ax.yaxis.set_major_locator(FixedLocator([1, 2, 3, 5, 10, 20, 50, 100]))
-                ax.yaxis.set_minor_locator(FixedLocator([]))
-                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
-                ax.axhline(1.0, color="gray", ls="--")
-                ax.set_xticks(range(len(sizes)))
-                ax.set_xticklabels([size_label.get(s, s) for s in sizes])
-                ax.set_title(f"{c} core{'' if c == '1' else 's'}, {ld}")
-                if ri == 0 and ci == 0:
-                    ax.legend(fontsize=9)
-                if ci == 0:
-                    ax.set_ylabel("slowdown vs unwatched (log)")
-        fig.suptitle("eBPF vs pipe|grep across every knob: write size x cores x process load\n"
-                     "(slowdown of the watched process; strace omitted — always ~100x)")
-        fig.tight_layout()
-        fig.savefig(os.path.join(IMG, "matrix.png"), dpi=130)
-        plt.close(fig)
-    print("wrote matrix.png")
+def human(v):
+    if v >= 1e6:
+        return f"{v / 1e6:.1f}M"
+    if v >= 1e3:
+        return f"{v / 1e3:.0f}K"
+    return f"{v:.0f}"
 
 
 def main():
-    plot_perevent()
-    plot_matrix()
+    if not os.path.exists(DATA):
+        print(f"no {DATA} — skipping xdp.png")
+        return
+    d, sizes = {}, []
+    with open(DATA, newline="") as f:
+        for r in csv.DictReader(f):
+            d[(r["bytes"], r["method"])] = float(r["pps"])
+            if r["bytes"] not in sizes:
+                sizes.append(r["bytes"])
+    sizes = sorted(sizes, key=int)
+
+    with plt.xkcd():
+        fig, axes = plt.subplots(1, len(sizes), figsize=(5.2 * len(sizes), 6.0),
+                                 squeeze=False)
+        for ci, size in enumerate(sizes):
+            ax = axes[0][ci]
+            ys = [d.get((size, m), 0) for m in METHODS]
+            ax.bar(range(len(METHODS)), ys, color=[COLOR[m] for m in METHODS])
+            for i, v in enumerate(ys):
+                ax.text(i, v, human(v) + "\npps", ha="center", va="bottom", fontsize=9)
+            ax.set_xticks(range(len(METHODS)))
+            ax.set_xticklabels([LABELS[m] for m in METHODS])
+            ax.set_title(f"{size} B packets")
+            ax.set_ylim(0, max(ys) * 1.25 if max(ys) else 1)
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: human(v)))
+            if ci == 0:
+                ax.set_ylabel("packets/sec dropped (higher = keeps up)")
+        fig.suptitle("Dropping a UDP flood: kernel (XDP / iptables) keeps up, "
+                     "userspace can't\n(veth in CI — software senders, not a real NIC)")
+        fig.tight_layout()
+        fig.savefig(os.path.join(IMG, "xdp.png"), dpi=130)
+        plt.close(fig)
+    print("wrote xdp.png")
 
 
 if __name__ == "__main__":

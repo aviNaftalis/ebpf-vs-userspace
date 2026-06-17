@@ -17,7 +17,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev libelf-dev zlib1g-dev \
-                                  linux-tools-common linux-tools-generic strace make \
+                                  linux-tools-common linux-tools-generic make \
+                                  iproute2 iptables \
                                   python3-matplotlib python3-numpy fonts-humor-sans
           # `bpftool` is a virtual package on the runner; use the generic binary
           # directly (its btf-dump / gen-skeleton work regardless of kernel version).
@@ -34,7 +35,7 @@ jobs:
       - name: Build
         run: make
 
-      - name: Benchmark (root needed for eBPF + strace)
+      - name: Benchmark (root needed for XDP + netns + iptables)
         run: |
           set -o pipefail
           sudo bash ./scripts/bench.sh | tee results.md
@@ -44,9 +45,9 @@ jobs:
       - name: Render graph + commit refreshed results
         if: github.ref == 'refs/heads/main'
         run: |
-          python3 scripts/plot.py results.csv          # -> docs/img/results.png + sizes.png
+          python3 scripts/plot.py packets.csv          # -> docs/img/xdp.png
           python3 scripts/update_readme.py results.md  # table -> README markers
-          git add docs/img/contextswitch.png docs/img/matrix.png README.md
+          git add docs/img/xdp.png README.md
           if ! git diff --cached --quiet; then
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"

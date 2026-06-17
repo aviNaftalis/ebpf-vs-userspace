@@ -1,109 +1,87 @@
 #!/usr/bin/env bash
-# bench.sh — observe the same workload four ways and emit a Markdown results
-# table on stdout. Run as root (eBPF + strace need privileges):  sudo ./scripts/bench.sh
+# bench.sh — the same job (drop a UDP flood) done three ways, measured as
+# "packets/sec each method actually handled". Run as root:  sudo ./scripts/bench.sh
 #
-# The task: count the ERROR lines a process writes, while it runs.
-#   baseline     target alone, unobserved (how fast can it go?)
-#   ebpf         hook write() in-kernel, check the prefix (target unmodified)
-#   pipe|grep    the normal "app | grep" pipeline (cooperative userspace)
-#   strace       ptrace every write() (transparent userspace — what eBPF replaces)
+#   XDP        eBPF in the driver — drop the packet before an sk_buff exists
+#   iptables   netfilter DROP — packet gets an sk_buff + walks the IP stack first
+#   userspace  bind a UDP socket and recvmmsg() the firehose (full stack + copy)
+#
+# A pack of senders floods the veth flat-out; whichever method is active is the
+# only thing draining it, so each gets the whole offered load to itself. We sweep
+# small (64 B) vs large (1400 B) payloads. Output: packets.csv (bytes,method,pps).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/netns.sh
+source "$ROOT/scripts/netns.sh"
 
-N=${LINES:-200000}
-P=${ERRPCT:-10}
-TRIALS=${TRIALS:-3}
-EXPECTED=$(( N / 100 * P ))
+DUR=${DUR:-4}            # seconds each method is measured
+SENDERS=${SENDERS:-3}    # parallel flood processes (out-run the userspace sink)
+SIZES=${SIZES:-"64 1400"}
 
-now_ns() { date +%s%N; }
+trap net_down EXIT
+net_up
 
-# Minimum wall-time (ms) over TRIALS runs of a command; output discarded.
-mintime() {
-  local best=0 t0 t1 ms
-  for _ in $(seq "$TRIALS"); do
-    t0=$(now_ns); "$@" >/dev/null 2>&1 || true; t1=$(now_ns)
-    ms=$(( (t1 - t0) / 1000000 ))
-    if [ "$best" -eq 0 ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
-  done
-  echo "$best"
+echo "bytes,method,pps" > "$ROOT/packets.csv"
+
+ipt_count() {  # packets matched by our DROP rule so far
+	ip netns exec "$RXNS" iptables -nvx -L INPUT 2>/dev/null \
+		| awk '/DROP/ && /udp/ {print $1; exit}'
 }
 
-TARGET=(./logtarget --lines "$N" --error-pct "$P")
+for size in $SIZES; do
+	echo "=== payload ${size} B ===" >&2
 
-# --- time each method ---
-base_ms=$(mintime "${TARGET[@]}")
-ebpf_ms=$(mintime ./ebpf_observer -- "${TARGET[@]}")
-ebpf_co_ms=$(mintime ./ebpf_observer --count-only -- "${TARGET[@]}")  # no user-memory read
-pipe_ms=$(mintime bash -c "./logtarget --lines $N --error-pct $P | grep -c ERROR")
-strace_ms=$(mintime strace -f -s 16 -e trace=write -o /tmp/strace.out "${TARGET[@]}")
+	# start the flood (covers all three measurement windows + margin)
+	window=$(( DUR * 3 + 8 ))
+	pids=()
+	for _ in $(seq "$SENDERS"); do
+		./udp_flood "$RXIP" "$PORT" "$size" "$window" 2>/dev/null &
+		pids+=($!)
+	done
+	sleep 0.5
 
-# --- correctness: ERROR count each method reports ---
-ebpf_cnt=$(./ebpf_observer -- "${TARGET[@]}" 2>/dev/null)
-pipe_cnt=$("${TARGET[@]}" | grep -c ERROR || true)
-strace -f -s 16 -e trace=write -o /tmp/strace.out "${TARGET[@]}" >/dev/null 2>&1 || true
-strace_cnt=$(grep -c '"ERROR' /tmp/strace.out || true)
+	# 1) XDP — attach, drop for DUR, read the in-kernel counter
+	xdp=$(ip netns exec "$RXNS" ./xdp_loader "$VETH1" "$DUR" 2>>/tmp/xdp.log)
 
-ok() { [ "$1" = "$EXPECTED" ] && echo "yes" || echo "NO ($1)"; }
-kps() { awk -v n="$N" -v ms="$1" 'BEGIN{ printf (ms>0)? "%.0f" : "inf", n/ms }'; }   # K lines/s = N/ms
-slow() { awk -v a="$1" -v b="$base_ms" 'BEGIN{ printf "%.1f", (b>0)? a/b : 0 }'; }
-# ns added per write() vs the bare baseline write — the honest "overhead" number.
-nsw() { awk -v m="$1" -v b="$base_ms" -v n="$N" 'BEGIN{ printf "%.0f", (m-b)*1e6/n }'; }
-base_nsw=$(awk -v b="$base_ms" -v n="$N" 'BEGIN{ printf "%.0f", b*1e6/n }')
+	# 2) iptables — DROP rule, zero counters, measure the delta over DUR
+	ip netns exec "$RXNS" iptables -A INPUT -p udp --dport "$PORT" -j DROP
+	ip netns exec "$RXNS" iptables -Z INPUT
+	sleep "$DUR"
+	c=$(ipt_count); c=${c:-0}
+	ipt=$(awk -v c="$c" -v d="$DUR" 'BEGIN{ printf "%.0f", c / d }')
+	ip netns exec "$RXNS" iptables -D INPUT -p udp --dport "$PORT" -j DROP
 
-# Machine-readable data for scripts/plot.py.
-cat > "$ROOT/results.csv" <<CSV
-method,wall_ms,throughput_klps,slowdown
-baseline,${base_ms},$(kps "$base_ms"),1.0
-eBPF,${ebpf_ms},$(kps "$ebpf_ms"),$(slow "$ebpf_ms")
-pipe|grep,${pipe_ms},$(kps "$pipe_ms"),$(slow "$pipe_ms")
-strace,${strace_ms},$(kps "$strace_ms"),$(slow "$strace_ms")
-CSV
+	# 3) userspace — recvmmsg as fast as we can for DUR
+	us=$(ip netns exec "$RXNS" ./udp_sink 0.0.0.0 "$PORT" "$DUR" 2>>/tmp/sink.log)
 
-# Per-event cost of the two methods that intercept EVERY write(): eBPF handles it
-# in the kernel (0 context switches), strace wakes a userspace tracer (2/syscall).
-# The gap is the context switch — eBPF's whole point.
-cat > "$ROOT/perevent.csv" <<CSV
-method,ns_per_event
-eBPF (no switch),$(nsw "$ebpf_ms")
-pipe|grep (batched),$(nsw "$pipe_ms")
-strace (switch/syscall),$(nsw "$strace_ms")
-CSV
+	kill "${pids[@]}" 2>/dev/null || true
+	wait 2>/dev/null || true
 
-cat <<EOF
-_Generated by CI on $(date -u +%Y-%m-%d), kernel \`$(uname -r)\`, $(nproc) CPUs. Workload: ${N} lines, ${P}% ERROR, one \`write()\` each (expected ERROR count = ${EXPECTED})._
-
-| method | wall (ms) | throughput (K lines/s) | slowdown vs baseline | ERROR count correct? |
-|---|--:|--:|--:|:--:|
-| baseline (unobserved) | ${base_ms} | $(kps "$base_ms") | 1.0× | – |
-| **eBPF (in-kernel)** | ${ebpf_ms} | $(kps "$ebpf_ms") | $(slow "$ebpf_ms")× | $(ok "$ebpf_cnt") |
-| pipe \| grep (userspace) | ${pipe_ms} | $(kps "$pipe_ms") | $(slow "$pipe_ms")× | $(ok "$pipe_cnt") |
-| strace / ptrace (userspace) | ${strace_ms} | $(kps "$strace_ms") | $(slow "$strace_ms")× | $(ok "$strace_cnt") |
-
-**Per-\`write()\` overhead (the honest number):** the bare baseline write costs ~${base_nsw} ns. eBPF adds **~$(nsw "$ebpf_ms") ns** (prefix check) — or just **~$(nsw "$ebpf_co_ms") ns** if it only counts (skipping the user-memory read). The big ×'s above are only because the baseline write (to \`/dev/null\`) is nearly free; on a process doing real work per syscall, ~$(nsw "$ebpf_ms") ns is well under 1%.
-EOF
-
-# --- the parameter matrix: eBPF vs pipe|grep across EVERY knob ------------
-# write size (small vs 64 KB) x cores (1 vs 2) x process load (idle vs busy,
-# i.e. does the process do real work besides the write?). strace is omitted —
-# it's always ~100x worse (see the per-event chart). Slowdown vs that cell's own
-# unwatched baseline.
-ratio() { awk -v a="$1" -v b="$2" 'BEGIN{ printf "%.2f", (b>0)? a/b : 0 }'; }
-ML=${ML:-10000}            # lines per cell
-TRIALS=${MTRIALS:-2}       # matrix is 8 cells; fewer trials (this is the last pass)
-echo "size,cores,load,method,slowdown" > "$ROOT/matrix.csv"
-for size in 64 65536; do
-  for cpus in 0 0,1; do
-    for work in 0 8000; do
-      ncpu=$([ "$cpus" = "0" ] && echo 1 || echo 2)
-      load=$([ "$work" = "0" ] && echo idle || echo busy)
-      T=(./logtarget --lines "$ML" --error-pct "$P" --bytes "$size" --work "$work")
-      b=$(mintime taskset -c "$cpus" "${T[@]}")
-      e=$(mintime taskset -c "$cpus" ./ebpf_observer -- "${T[@]}")
-      g=$(mintime taskset -c "$cpus" bash -c "./logtarget --lines $ML --error-pct $P --bytes $size --work $work | grep -c ERROR")
-      echo "$size,$ncpu,$load,eBPF,$(ratio "$e" "$b")"      >> "$ROOT/matrix.csv"
-      echo "$size,$ncpu,$load,pipe|grep,$(ratio "$g" "$b")" >> "$ROOT/matrix.csv"
-    done
-  done
+	echo "${size},XDP,${xdp:-0}"       >> "$ROOT/packets.csv"
+	echo "${size},iptables,${ipt:-0}"  >> "$ROOT/packets.csv"
+	echo "${size},userspace,${us:-0}"  >> "$ROOT/packets.csv"
 done
+
+echo "--- packets.csv ---" >&2
+cat "$ROOT/packets.csv" >&2
+
+# Markdown summary on stdout (spliced into the README by update_readme.py).
+nproc_n=$(nproc)
+kern=$(uname -r)
+fmt() { awk -v v="$1" 'BEGIN{ if (v>=1e6) printf "%.1f M", v/1e6; else if (v>=1e3) printf "%.0f K", v/1e3; else printf "%.0f", v }'; }
+val() { awk -F, -v b="$1" -v m="$2" '$1==b && $2==m {print $3}' "$ROOT/packets.csv"; }
+
+{
+echo "_Measured by CI on $(date -u +%Y-%m-%d) — kernel \`${kern}\`, ${nproc_n} CPUs, over a veth pair (software, not a real NIC; see the caveat above)._"
+echo
+echo "| payload | XDP (driver) | iptables (netfilter) | userspace (recv) |"
+echo "|---|--:|--:|--:|"
+for size in $SIZES; do
+	printf "| %s B | %s pps | %s pps | %s pps |\n" \
+		"$size" "$(fmt "$(val "$size" XDP)")" "$(fmt "$(val "$size" iptables)")" "$(fmt "$(val "$size" userspace)")"
+done
+echo
+echo "Packets/sec each method drained from the same flood. XDP and iptables drop in the kernel and keep up with whatever the (software) senders offer; **userspace can't** — the gap is everything it pays per packet that the kernel paths skip."
+}

@@ -2,105 +2,85 @@
 
 [![ci](https://github.com/aviNaftalis/ebpf-vs-userspace/actions/workflows/ci.yml/badge.svg)](https://github.com/aviNaftalis/ebpf-vs-userspace/actions/workflows/ci.yml)
 
-Count a running process's `ERROR` log lines **without stopping it** — three ways:
-**eBPF** (a kernel hook on `write()`), the classic **`pipe | grep`**, or **`strace`**
-(`ptrace`). How much does each slow the process down? It depends on three knobs:
-**write size, spare cores, and whether the process actually does work.**
+**Where eBPF beats everything: dropping packets before the kernel even builds an
+`sk_buff`.** This is XDP — an eBPF program that runs *in the NIC driver*, the first
+code to touch a packet. The classic use case is DDoS filtering: drop millions of
+junk packets per second per core, at almost no cost.
 
-**TL;DR**
-- **`strace`: always ~100× — never in production.** It context-switches to a userspace
-  tracer on *every* syscall.
-- **eBPF vs `pipe | grep`: it depends** (see the matrix). `pipe | grep` wins *only* for
-  small writes *with a spare core*; eBPF wins on big writes or one core.
-- **On a process that does real work, every overhead is tiny (~1.1×).** The scary
-  "2.5×" only happens when the process does nothing but write to `/dev/null`.
+We drop the same UDP flood three ways and count how many packets/sec each keeps up with:
 
-## Why `strace` is hopeless: the context switch
+| | where it runs | what it pays per packet |
+|---|---|---|
+| **XDP** (eBPF) | in the driver, before `sk_buff` | almost nothing — drop and return |
+| **iptables** | netfilter, after `sk_buff` + IP stack | alloc + stack walk, then drop |
+| **userspace** | a `recvmmsg()` loop on a socket | all of the above + socket queue + copy to userspace |
 
-![per-event cost — how often each leaves the kernel](docs/img/contextswitch.png)
+**TL;DR — it's all about *how early you can say no.*** XDP says no in the driver;
+iptables says no after the kernel has already done the expensive bookkeeping;
+userspace says no last, after paying for everything. Under a flood, that ordering
+is the whole story.
 
-All three watch every `write()`; the difference is **how often each leaves the
-kernel**. `strace` switches per syscall (~100×); `pipe | grep` *batches* (the pipe
-buffers ~64 KB, so ~1 switch per few thousand writes); eBPF *never* switches.
-(eBPF's ~600 ns is inline on the process's own thread; `pipe | grep`'s ~235 ns is
-just the pipe-write — `grep` scans on another core.)
+## The measurement
 
-## The full picture: every knob
+![dropping a UDP flood: kernel keeps up, userspace can't](docs/img/xdp.png)
 
-eBPF vs `pipe | grep` across **write size × cores × process load** (`strace` omitted —
-always ~100×):
-
-![eBPF vs pipe|grep across all parameters](docs/img/matrix.png)
-
-- **Small writes + a spare core →** `pipe | grep` wins: it batches its switches and
-  offloads the scan to another core.
-- **Big writes (≈ the pipe's 64 KB buffer) →** batching collapses (it fills every
-  write) and it must move every byte → **eBPF wins**.
-- **One core →** nothing to offload to → eBPF wins or ties.
-- **Busy process (real work per line) →** every overhead shrinks toward ~1.1× — eBPF
-  is essentially free; the headline ratios were an artifact of a do-nothing baseline.
-
-## Where eBPF shines so bright nothing competes: XDP
-
-The benchmark above is *observability*, where eBPF is good but not always the
-fastest. eBPF's genuinely **unbeatable** use case is **XDP** — running the program
-in the NIC driver, *before* the kernel allocates an `sk_buff`. For dropping or
-redirecting packets (DDoS filtering, L4 load balancing) nothing in userspace is
-close:
-
-| dropping ~64 B packets, 1 core | drops/sec |
-|---|--:|
-| **XDP (eBPF, in the driver)** | **~26 M** |
-| iptables / netfilter | ~2 M |
-| userspace (recv + drop) | ~0.1–1 M |
-
-*(Published numbers: [Red Hat — 26 Mpps/core](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/8/html/configuring_and_managing_networking/using-xdp-filter-for-high-performance-traffic-filtering-to-prevent-ddos-attacks_configuring-and-managing-networking); iptables ~2 Mpps. The win is that iptables/userspace only see a packet *after* the kernel has built an `sk_buff` and walked the stack — under attack, that bookkeeping alone melts the box.)*
-
-**But it only shines with the knobs set right — turn them wrong and it's ordinary:**
-- **Packet size** — XDP wins on *small* packets (DDoS = millions of tiny pps, where per-packet overhead is everything). With large packets you're bandwidth-bound by the NIC, so XDP's per-packet edge barely shows.
-- **XDP mode** — *native* (driver) XDP is the fast path; *generic/SKB* mode runs after the `sk_buff` is allocated and gives up most of the advantage.
-- **Cores / RX queues** — XDP scales per-queue; more cores → more pps.
-- **The action** — dropping/redirecting *in-kernel* is the sweet spot. If you have to send the packet up to userspace anyway, the advantage collapses.
-
-So: small packets + native mode + in-kernel drop → 10×+ anything else; large packets, or generic mode, or a userspace handoff → XDP looks unremarkable.
-
-> Reproducing the 26 Mpps needs a real NIC and a line-rate traffic generator — a CI
-> VM can't make that traffic, so this table is published-numbers, not measured here.
-> (The measured charts above are the observability story, which CI *can* run.)
-
-## When to use what
-- **eBPF** — watch a process you can't change, a firehose you only want summarized, or
-  when there's no spare core. Cheap and invisible; can't *parse* (the verifier bans loops/regex).
-- **pipe | grep** — you own the app, output is small/streamed, and you have a spare core.
-- **strace** — debugging only; brutal at scale.
-
-<details><summary>exact numbers for the headline config (auto-refreshed by CI)</summary>
+The kernel-side droppers (XDP, iptables) keep up with whatever the senders offer;
+**userspace falls behind** — every packet it sees costs an sk_buff, a trip up the IP
+stack, a socket-queue enqueue, and a copy into the process. The packets it can't
+get to in time the kernel silently drops, so its bar is what one core can *actually*
+pull out of a socket.
 
 <!-- RESULTS:START -->
-_Generated by CI on 2026-06-17, kernel `6.17.0-1018-azure`, 4 CPUs. Workload: 200000 lines, 10% ERROR, one `write()` each (expected ERROR count = 20000)._
-
-| method | wall (ms) | throughput (K lines/s) | slowdown vs baseline | ERROR count correct? |
-|---|--:|--:|--:|:--:|
-| baseline (unobserved) | 80 | 2500 | 1.0× | – |
-| **eBPF (in-kernel)** | 209 | 957 | 2.6× | yes |
-| pipe \| grep (userspace) | 128 | 1562 | 1.6× | yes |
-| strace / ptrace (userspace) | 14167 | 14 | 177.1× | yes |
-
-**Per-`write()` overhead (the honest number):** the bare baseline write costs ~400 ns. eBPF adds **~645 ns** (prefix check) — or just **~535 ns** if it only counts (skipping the user-memory read). The big ×'s above are only because the baseline write (to `/dev/null`) is nearly free; on a process doing real work per syscall, ~645 ns is well under 1%.
-
+_no results yet — CI will fill this in_
 <!-- RESULTS:END -->
 
-</details>
+## The honest caveat (why these aren't the famous numbers)
+
+The headline XDP figure everyone quotes is **~26 Mpps per core** ([Red Hat](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/8/html/configuring_and_managing_networking/using-xdp-filter-for-high-performance-traffic-filtering-to-prevent-ddos-attacks_configuring-and-managing-networking)),
+vs **~2 Mpps** for iptables — a 10×+ gap. **You won't see that gap here**, because:
+
+- Reproducing it needs a **real NIC + a line-rate traffic generator**. A GitHub
+  Actions VM has neither — it floods a `veth` pair in software, so the *sender* is
+  the bottleneck, not the dropper.
+- At those modest rates XDP and iptables both keep up, so they look tied. The thing
+  CI *can* show honestly is the next rung down: **kernel-drop ≫ userspace-drop**,
+  and how the gap moves with packet size.
+
+So treat the chart as "the ordering is real, on hardware the top two pull apart."
+
+## Turn the knobs wrong and XDP is ordinary
+
+XDP only shines when the conditions are right — the same physics that make it
+unbeatable for DDoS make it pointless elsewhere:
+
+- **Packet size** — XDP wins on *small* packets, where per-packet overhead dominates
+  (DDoS = millions of tiny packets). With large packets you're bandwidth-bound by the
+  wire, so the per-packet edge barely shows. *(That's the two panels above.)*
+- **Native vs generic mode** — *native* XDP runs in the driver; *generic/SKB* mode
+  runs after the `sk_buff` is allocated and throws away most of the advantage.
+- **The action** — dropping/redirecting *in-kernel* is the sweet spot. If you have to
+  hand the packet up to userspace anyway, you've paid the full price — XDP bought you
+  nothing.
+
+## How it works
+
+`veth` pair with one end in its own netns, so traffic crosses a virtual wire. A pack
+of senders floods it; whichever method is active is the only thing draining it.
+
+- [`xdp_count.bpf.c`](src/xdp_count.bpf.c) — the XDP program: parse eth→IP, drop UDP
+  (everything else passes, so ARP still resolves), count in a `.bss` variable.
+- [`xdp_loader.cpp`](src/xdp_loader.cpp) — attach it (native, falls back to generic),
+  measure the drop rate, detach.
+- [`udp_flood.cpp`](src/udp_flood.cpp) · [`udp_sink.cpp`](src/udp_sink.cpp) — the
+  sender and the userspace receiver.
+- [`bench.sh`](scripts/bench.sh) · [`plot.py`](scripts/plot.py) — orchestrate + chart.
 
 ## Run it
 
 Linux with BTF (`/sys/kernel/btf/vmlinux`) + root:
 
 ```bash
-make && sudo ./scripts/bench.sh && python3 scripts/plot.py
+make && sudo ./scripts/bench.sh && python3 scripts/plot.py packets.csv
 ```
 
-CI runs it on `ubuntu-latest` and commits the refreshed charts + numbers here on every
-push. Code: [`error_count.bpf.c`](src/error_count.bpf.c) ·
-[`ebpf_observer.cpp`](src/ebpf_observer.cpp) · [`logtarget.cpp`](src/logtarget.cpp) ·
-[`bench.sh`](scripts/bench.sh) · [`plot.py`](scripts/plot.py).
+CI runs it on `ubuntu-latest` and commits the refreshed chart + numbers on every push.
